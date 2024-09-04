@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:first_app/widgets/event.dart';
 import 'package:first_app/widgets/emotions.dart';
+import 'package:intl/intl.dart';
 
 //void main() => runApp(MyApp());
 
@@ -28,7 +29,7 @@ class _CameraScreenState extends State<CameraScreen> {
   late File _image = File(' ');
   String finalEmotion = "";
   final ImagePicker _picker = ImagePicker();
-  late List<String> topActivities;
+  List<String> topActivities = [];
 
   Future getImage(bool isCamera) async{
     XFile? image;
@@ -57,9 +58,10 @@ class _CameraScreenState extends State<CameraScreen> {
       var responseAPI = await requestAPI.send();
       var responseData = await http.Response.fromStream(responseAPI);
       var responseBody = jsonDecode(responseData.body);
+      print(responseBody);
 
       // Extract captured emotions from the response
-      var capturedEmotions = responseBody['captured_emotions'] as Map<String, dynamic>;
+      var capturedEmotions = responseBody['emotion_probabilities'] as Map<String, dynamic>;
 
       String finalEmotiontmp = capturedEmotions.entries.reduce((a, b) => a.value > b.value ? a : b).key;
 
@@ -67,17 +69,92 @@ class _CameraScreenState extends State<CameraScreen> {
         finalEmotion = finalEmotiontmp;
       });
       print('Captured Emotions: $capturedEmotions');
-      activityBeforeEvent();
-      //getTopActivities();
+      print('About to call activityBeforeEvent');
+      saveEmotionToDataBase();
+      emotionBeforeEvent();
+      getTopActivities();
+
       //print('API response: $responseBody');
     } catch (error) {
       print('API Error: $error');
     }
   }
 
+  void saveEmotionToDataBase() async{
+    final now = DateTime.now();
+    String formattedDate = DateFormat('yyyy-MM-dd – kk:mm').format(now);
+    final emotion = Emotion(
+      eventTitle: 'event',
+      emotion: finalEmotion,
+      start: now,
+    );
+
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.userEmail)
+        .collection('emotions')
+        .add(emotion.toMap());
+
+  }
+
+  void emotionBeforeEvent() async{
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day, 0, 0, 0).toIso8601String();// format to match the database format
+    final endOfDay = DateTime(now.year, now.month, now.day, 23, 59, 59).toIso8601String();
+    
+
+    QuerySnapshot snapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.userEmail)
+        .collection('events')
+        .where('start', isGreaterThanOrEqualTo: startOfDay)
+        .where('start', isLessThanOrEqualTo: endOfDay)
+        .get();
+    print("1");
+    final fetchedEvents = snapshot.docs.map((doc) {
+      return Event.fromMap(doc.data() as Map<String, dynamic>);
+    }).toList();
+    print('Today\'s events: ${fetchedEvents.length}');
+    for(var event in fetchedEvents) {
+      if(event.start.isAfter(now) && event.start
+          .difference(now)
+          .inMinutes <= 30){
+        final emotion = Emotion(
+          eventTitle: event.title,
+          emotion: finalEmotion,
+          start: now,
+        );
+        print(emotion);
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.userEmail)
+            .collection('emotionsBeforeEvents')
+            .add(emotion.toMap());
+        print("Emotion added succesfully");
+      }
+
+      if(event.start.isBefore(now) && event.end.isAfter(now)){
+        final emotion = Emotion(
+          eventTitle: event.title,
+          emotion: finalEmotion,
+          start: now,
+        );
+        print(emotion);
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(widget.userEmail)
+            .collection('emotionsDuringEvents')
+            .add(emotion.toMap());
+        print("Emotion added succesfully");
+      }
+    }
+
+  }
+
   void activityBeforeEvent() async {
     //DateTime dateAndDtime = DateTime.now();
     final now = DateTime.now();
+    int countEvents = 0;
     final upcomingEvents = await FirebaseFirestore.instance
         .collection('users')
         .get();
@@ -86,9 +163,11 @@ class _CameraScreenState extends State<CameraScreen> {
       final userEmail = user.id;
       final eventsSnapshot = await FirebaseFirestore.instance
           .collection('users')
-          .doc(userEmail)
+          .doc(widget.userEmail)
           .collection('events')
           .get();
+      countEvents++;
+      print(countEvents);
 
       for (var doc in eventsSnapshot.docs) {
         final event = Event.fromMap(doc.data() as Map<String, dynamic>);
@@ -106,6 +185,7 @@ class _CameraScreenState extends State<CameraScreen> {
           event.end.hour,
           event.end.minute,
         );
+        print(eventStartDateTime);
         final eventName = event.title;
 
         if (eventStartDateTime.isAfter(now) &&
@@ -115,35 +195,61 @@ class _CameraScreenState extends State<CameraScreen> {
           final emotion = Emotion(
             eventTitle: eventName,
             emotion: finalEmotion,
+            start: now,
           );
 
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(widget.userEmail)
-              .collection('emotionsBeforeEvents')
-              .add(emotion.toMap());
+          print("1" + eventName);
+          print("1" + finalEmotion);
+
+          // await FirebaseFirestore.instance
+          //     .collection('users')
+          //     .doc(widget.userEmail)
+          //     .collection('emotionsBeforeEvents')
+          //     .add(emotion.toMap());
+          try {
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc(widget.userEmail)
+                .collection('emotionsBeforeEvents')
+                .add(emotion.toMap());
+
+            print('Emotion before event added successfully.');
+          } catch (e) {
+            print('Failed to add emotion before event: $e');
+          }
         }
         if(eventStartDateTime.isBefore(now) && eventEndDateTime.isAfter(now)){
           final emotion = Emotion(
             eventTitle: eventName,
             emotion: finalEmotion,
+            start: now,
           );
-
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(widget.userEmail)
-              .collection('emotionsDuringEvents')
-              .add(emotion.toMap());
+          try{
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc(widget.userEmail)
+                .collection('emotionsDuringEvents')
+                .add(emotion.toMap());
+            print('Emotion during event added successfully.');
+          } catch (e) {
+            print('Failed to add emotion during event: $e');
+          }
         }
       }
     }
   }
 
   void getTopActivities() async{
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month - 1, now.day, 0, 0, 0).toIso8601String();// format to match the database format
+    final endOfDay = DateTime(now.year, now.month, now.day, 23, 59, 59).toIso8601String();
+
     QuerySnapshot snapshotBeforeEvent = await FirebaseFirestore.instance
         .collection('users')
         .doc(widget.userEmail)
         .collection('emotionsBeforeEvents')
+        .where('start', isGreaterThanOrEqualTo: startOfDay)
+        .where('start', isLessThanOrEqualTo: endOfDay)
         .get();
 
     final fetchedEmotionBefore = snapshotBeforeEvent.docs.map((doc) {
@@ -154,15 +260,17 @@ class _CameraScreenState extends State<CameraScreen> {
         .collection('users')
         .doc(widget.userEmail)
         .collection('emotionsDuringEvents')
+        .where('start', isGreaterThanOrEqualTo: startOfDay)
+        .where('start', isLessThanOrEqualTo: endOfDay)
         .get();
 
     final fetchedEmotionDuring = snapshotDuringEvent.docs.map((doc) {
       return Emotion.fromMap(doc.data() as Map<String, dynamic>);
     }).toList();
 
-    //setState(() {
-      //activities = {};
-    //var count = 0;
+    // setState(() {
+    //   activities = {};
+    // var count = 0;
       for (var emotion in fetchedEmotionBefore) {
         final eventTitleBefore = emotion.eventTitle;
         final emotionBefore = emotion.emotion;
@@ -171,16 +279,23 @@ class _CameraScreenState extends State<CameraScreen> {
           final emotionDuring = emotion2.emotion;
           if(eventTitleBefore == eventTitleDuring)
             {
-              if(emotionBefore == 'sad' && emotionDuring == 'happy')
+              if((emotionBefore == 'sad' || emotionBefore == 'angry' || emotionBefore == 'fear' || emotionBefore == 'disgust')
+                  && (emotionDuring == 'happy' || emotionDuring == 'neutral'))
                 {
-                  topActivities.add(eventTitleDuring);
-                  //count++;
+                  topActivities ??= [];
+                  if(topActivities != null){
+                    if(!topActivities.contains(eventTitleDuring)) {
+                      topActivities.add(eventTitleDuring);
+                    }
+                  }
                 }
             }
         }
       }
-    //}
-    //);
+
+
+    topActivities.shuffle();
+
   }
 
   String findActivities(String emotion){
@@ -219,6 +334,7 @@ class _CameraScreenState extends State<CameraScreen> {
   }
   @override
   Widget build(BuildContext context) {
+    final hasValidData = finalEmotion.isNotEmpty && topActivities != null && topActivities!.isNotEmpty;
     // TODO: implement build
     return MaterialApp(
       home:Scaffold(
@@ -255,8 +371,20 @@ class _CameraScreenState extends State<CameraScreen> {
                   child: Text('Analyze Image'),
            ),
              SizedBox(height: 20),
+
+            //print("hasvalidData: $hasValidData");
+
+
              finalEmotion.isNotEmpty
-                 ? Text('Your emotion is: $finalEmotion \nActivities that may improve your mood:\n ' + findActivities(finalEmotion) + '\n' + topActivities[0] +'\n' + topActivities[1] + '\n' + topActivities[2] , style: TextStyle(fontSize: 18))
+             //topActivities!.isNotEmpty
+                 ? Text('Your emotion is: $finalEmotion \nActivities that may improve your mood:\n ' + findActivities(finalEmotion) + '\n' , style: TextStyle(fontSize: 18))
+                 : Container(),
+             hasValidData
+                 ? Text(
+                   'Past events that helped:\n'
+                   '${topActivities![0]}${topActivities!.length > 1 ? '\n${topActivities![1]}' : ''}${topActivities!.length > 2 ? '\n${topActivities![2]}' : ''}', // Ensure topActivities has enough elements
+               style: TextStyle(fontSize: 18),
+             )
                  : Container(),
            ],
           ),
